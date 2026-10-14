@@ -20,7 +20,6 @@ from datetime import datetime
 from pickle import Unpickler
 from locale import getpreferredencoding
 import importlib.resources
-import sre_parse
 
 
 class Callable:
@@ -1461,6 +1460,10 @@ class PatternAggregator:
 
 
 class MatchAggregator:
+    # Group references as documented for re.sub: \g<name>, \g<number> and \number
+    templateRegex = re.compile(r"\\(?:g<(\w+)>|([1-9][0-9]?)|(.))", re.DOTALL)
+    escapes = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v", "0": "\0", "\\": "\\"}
+
     def __init__(self):
         self.match = None
         self.groups = ()
@@ -1481,27 +1484,22 @@ class MatchAggregator:
 
     def expand(self, template):
         if self.match is not None:
-            # Was originally calling re._expand, removed in Python 3.12
-            # Tried to use new parsing and copied expand function below to preserve behaviour
-            parsed_template = sre_parse.parse_template(template, self.patternAggregator)
-            if hasattr(sre_parse, "expand_template"):
-                return sre_parse.expand_template(parsed_template, self)
-            else:
-                return self.expand_template(parsed_template)
+            # Was originally calling re._expand, removed in Python 3.12, and sre_parse is gone as well.
+            # Both are private, so expand the group references ourselves
+            return self.templateRegex.sub(self.expandReference, template)
         else:
             return template
-        
-    def expand_template(self, template):
-        g = self.group
-        empty = self.string[:0]
-        groups = [ (ix, item) for (ix, item) in enumerate(template) if isinstance(item, int) ]            
-        literals = template[:]
+
+    def expandReference(self, refMatch):
+        name, number, char = refMatch.groups()
+        if char is not None:
+            return self.escapes.get(char, refMatch.group(0))
+        ref = name or number
         try:
-            for index, group in groups:
-                literals[index] = g(group) or empty
-        except IndexError:
-            raise re.error("invalid group reference %d" % index)
-        return empty.join(literals)
+            index = int(ref) if ref.isdigit() else self.patternAggregator.groupindex[ref]
+            return self.group(index) or ""
+        except (IndexError, KeyError):
+            raise re.error("invalid group reference " + ref)
 
     def __getattr__(self, name):
         return getattr(self.match, name)
